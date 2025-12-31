@@ -1,6 +1,6 @@
 # Ultimate SID Player
 
-Play SID music files from your **Ultimate64**, **Ultimate-II+**, or **Ultimate-II+L** via the REST API.
+Play SID music files from your **Ultimate64** or **Ultimate-II+** via the REST API.
 
 ## Features
 
@@ -69,7 +69,7 @@ See [README_SID_PLAYER.md](README_SID_PLAYER.md) for detailed documentation.
 
 ## Requirements
 
-- **Ultimate64**, **Ultimate-II+**, or **Ultimate-II+L** (firmware 3.11+)
+- **Ultimate64** or **Ultimate-II+** (firmware 3.11+)
 - Python 3.6+
 - **Software IEC** enabled on Ultimate
 
