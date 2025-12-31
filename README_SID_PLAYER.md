@@ -1,6 +1,6 @@
 # Ultimate SID Player
 
-A Python-based SID music player for the **Ultimate64** and **Ultimate-II+** that reads playlist files directly from the device and plays them via the REST API.
+A Python-based SID music player for the **Commodore 64 Ultimate**, **Ultimate64**, and **Ultimate-II+** that reads playlist files directly from the device and plays them via the REST API.
 
 ## Overview
 
@@ -36,7 +36,7 @@ This system consists of two parts:
 ## Requirements
 
 ### Hardware
-- **Ultimate64** or **Ultimate-II+** with firmware 3.11+
+- **Commodore 64 Ultimate**, **Ultimate64**, or **Ultimate-II+** with firmware 3.11+
 - USB drive with SID files (e.g., HVSC collection)
 
 ### Software
@@ -244,6 +244,7 @@ Controls: [SPACE] = next song, [Q] = quit and reset C64
 
 ## Compatible Devices
 
+- ✅ Commodore 64 Ultimate
 - ✅ Ultimate64
 - ✅ Ultimate-II+
 
