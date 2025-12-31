@@ -34,6 +34,7 @@ discover_sid_files.py
 # Misc
 *.txt
 !requirements.txt
+!usidp_config.json
 upload_to_c64.sh
 dir_dump.bas
 dir_dump.prg

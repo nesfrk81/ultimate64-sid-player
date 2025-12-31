@@ -1,0 +1,8 @@
+{
+    "host": "192.168.1.234",
+    "port": 80,
+    "base_path": "/USB0/MUSIC/HVSC/BESTOF",
+    "duration": 180,
+    "random": false,
+    "loop": false
+}

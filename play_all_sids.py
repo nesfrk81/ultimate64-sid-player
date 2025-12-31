@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-Play all SID files from a list file on the Commodore 64 Ultimate
+Ultimate SID Player - Play SID files from your Ultimate64/Ultimate-II+
 
 This script reads a SIDFILES.TXT file from the Ultimate device and plays
 all SID files listed in it.
 
 Features:
-- Reads SID file list from SIDFILES.TXT on the Ultimate
+- Reads SID file list from SIDFILES.TXT via C64 memory
 - Random/shuffle mode with --random flag
-- Configurable delay between songs
-- Attempts to get SID duration from file info
+- Loop mode with --loop flag
+- Configurable duration per song
+- Keyboard controls: SPACE = next song, Q = quit and reset C64
 """
 
 import sys
@@ -18,67 +19,112 @@ import time
 import random
 import argparse
 import requests
-import struct
+import select
+import termios
+import tty
+import json
 
-# Ultimate device configuration
-ULTIMATE_HOST = "192.168.1.234"
-ULTIMATE_PORT = 80
+# Path to script directory and config file
+SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+CONFIG_FILE = os.path.join(SCRIPT_DIR, "usidp_config.json")
+
+# Default configuration
+DEFAULT_CONFIG = {
+    "host": "192.168.1.234",
+    "port": 80,
+    "base_path": "/USB0/MUSIC/HVSC/BESTOF",
+    "duration": 180,
+    "random": False,
+    "loop": False
+}
+
+# Ultimate device configuration (will be set from config file or CLI args)
+ULTIMATE_HOST = DEFAULT_CONFIG["host"]
+ULTIMATE_PORT = DEFAULT_CONFIG["port"]
 ULTIMATE_BASE_URL = f"http://{ULTIMATE_HOST}:{ULTIMATE_PORT}"
 API_BASE = f"{ULTIMATE_BASE_URL}/v1"
 
 # Default song duration in seconds (used when duration can't be determined)
-DEFAULT_SONG_DURATION = 180  # 3 minutes
-
-# Path to the memory loader PRG (for reading files via C64 memory)
-SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
-MEMLOAD_PRG = os.path.join(SCRIPT_DIR, "memload.prg")
+DEFAULT_SONG_DURATION = DEFAULT_CONFIG["duration"]
 
 
-def read_file_from_ultimate(file_path, verbose=True):
+def load_config():
+    """Load configuration from usidp_config.json, creating it if it doesn't exist."""
+    if os.path.exists(CONFIG_FILE):
+        try:
+            with open(CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+            # Merge with defaults for any missing keys
+            for key, value in DEFAULT_CONFIG.items():
+                if key not in config:
+                    config[key] = value
+            return config
+        except Exception as e:
+            print(f"Warning: Could not load config file: {e}")
+            return DEFAULT_CONFIG.copy()
+    else:
+        # Create default config file
+        save_config(DEFAULT_CONFIG)
+        return DEFAULT_CONFIG.copy()
+
+
+def save_config(config):
+    """Save configuration to usidp_config.json."""
+    try:
+        with open(CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=4)
+    except Exception as e:
+        print(f"Warning: Could not save config file: {e}")
+
+
+def get_device_for_path(path):
     """
-    Read a text file from the Ultimate device using the REST API.
-    Tries multiple API endpoints and URL formats.
+    Determine the IEC device number based on the path.
+    USB0 = device 11, USB1 = device 10
     """
-    path = file_path.lstrip('/')
-    
-    # Try different URL formats
-    urls_to_try = [
-        f"{API_BASE}/files/{path}",
-        f"{API_BASE}/files/{path}:read",
-        f"{API_BASE}/files:read?path=/{path}",
-        f"{ULTIMATE_BASE_URL}/files/{path}",
-    ]
-    
-    headers_to_try = [
-        {},
-        {"Accept": "text/plain"},
-        {"Accept": "application/octet-stream"},
-    ]
-    
-    for url in urls_to_try:
-        for headers in headers_to_try:
-            try:
-                response = requests.get(url, headers=headers, timeout=10)
-                if response.status_code == 200:
-                    # Check if we got actual content (not JSON error)
-                    content = response.text
-                    if content and not content.strip().startswith('{'):
-                        return content
-                    # If JSON, might be file info not content
-                    try:
-                        data = response.json()
-                        if 'content' in data:
-                            return data['content']
-                        if 'data' in data:
-                            return data['data']
-                    except:
-                        return content
-            except Exception as e:
-                pass
-    
-    if verbose:
-        print(f"    Could not read file via API")
+    path_upper = path.upper()
+    if path_upper.startswith("/USB1") or path_upper.startswith("USB1"):
+        return 10
+    # Default to USB0 (device 11)
+    return 11
+
+
+def get_key_press():
+    """
+    Check for a key press without blocking.
+    Returns the key pressed, or None if no key was pressed.
+    """
+    if select.select([sys.stdin], [], [], 0)[0]:
+        return sys.stdin.read(1)
     return None
+
+
+class RawTerminal:
+    """Context manager for raw terminal mode (non-blocking key input)."""
+    def __init__(self):
+        self.fd = sys.stdin.fileno()
+        self.old_settings = None
+    
+    def __enter__(self):
+        try:
+            self.old_settings = termios.tcgetattr(self.fd)
+            tty.setraw(self.fd)
+            # Set non-blocking
+            import fcntl
+            self.old_flags = fcntl.fcntl(self.fd, fcntl.F_GETFL)
+            fcntl.fcntl(self.fd, fcntl.F_SETFL, self.old_flags | os.O_NONBLOCK)
+        except:
+            pass
+        return self
+    
+    def __exit__(self, *args):
+        if self.old_settings:
+            try:
+                termios.tcsetattr(self.fd, termios.TCSADRAIN, self.old_settings)
+                import fcntl
+                fcntl.fcntl(self.fd, fcntl.F_SETFL, self.old_flags)
+            except:
+                pass
 
 
 def read_file_via_memory(base_path, filename="SIDFILES.TXT", verbose=True):
@@ -86,30 +132,31 @@ def read_file_via_memory(base_path, filename="SIDFILES.TXT", verbose=True):
     Read a file from the Ultimate by loading it into C64 memory via a BASIC program,
     then reading the memory via the REST API.
     
-    This is a workaround since the Ultimate API doesn't support reading file contents directly.
-    
     Steps:
-    1. Generate a custom memload.prg that loads the specific file
+    1. Generate a loader program that loads the specific file to C64 memory
     2. Run the PRG on the C64
     3. Wait for it to complete
     4. Read memory at $C000 
     5. Return the file contents
     """
     if verbose:
-        print(f"  Using memory hack to read file...")
+        print(f"  Reading SIDFILES.TXT from C64 memory...")
+    
+    # Determine the correct device number based on path (USB0=11, USB1=10)
+    device = get_device_for_path(base_path)
     
     # Build the BASIC program dynamically for the target path
     bas_content = f'''10 REM Load file to memory via CD
 20 PRINT CHR$(147);"LOADING FILE TO MEMORY"
 30 PRINT
-40 REM First change directory
-50 OPEN 15,11,15,"CD:/{base_path.lstrip('/')}"
+40 REM First change directory (device {device})
+50 OPEN 15,{device},15,"CD:/{base_path.lstrip('/')}"
 60 CLOSE 15
 70 PRINT "CD DONE"
 80 REM Small delay for drive
 90 FOR I=1 TO 500:NEXT I
 100 REM Open file in current directory  
-110 OPEN 1,11,0,"{filename},S,R"
+110 OPEN 1,{device},0,"{filename},S,R"
 120 IF ST<>0 THEN PRINT "OPEN ERR ST=";ST:GOTO 250
 130 PRINT "FILE OPENED"
 140 REM Read to $C000
@@ -324,6 +371,18 @@ def stop_sid():
         return False
 
 
+def reset_machine():
+    """
+    Reset the C64 machine.
+    """
+    url = f"{API_BASE}/machine:reset"
+    try:
+        response = requests.put(url, timeout=5)
+        return response.status_code in (200, 204)
+    except:
+        return False
+
+
 def parse_sidfiles_txt(content, base_path):
     """
     Parse the SIDFILES.TXT content and return list of full paths.
@@ -369,10 +428,12 @@ def play_all_sids(sid_list_path, base_path, duration=None, song_number=1,
         local_list: Path to local file with SID list (bypasses Ultimate file reading)
     """
     print("=" * 60)
+    device_num = get_device_for_path(base_path)
     print("Ultimate SID Player")
     print("=" * 60)
-    print(f"Device: {ULTIMATE_BASE_URL}")
+    print(f"Host: {ULTIMATE_BASE_URL}")
     print(f"Base path: {base_path}")
+    print(f"IEC Device: {device_num} ({'USB0' if device_num == 11 else 'USB1'})")
     print("-" * 60)
     
     content = None
@@ -388,39 +449,15 @@ def play_all_sids(sid_list_path, base_path, duration=None, song_number=1,
             print(f"  ✗ Error reading local file: {e}")
             return
     else:
-        # Option 2: Read from Ultimate device
+        # Read from Ultimate device via C64 memory
         print(f"Reading SID file list from Ultimate...")
         
         # Try different filename variants (C64 sequential files have .SEQ extension)
-        variants = [
-            sid_list_path,
-            sid_list_path + ".SEQ",
-            sid_list_path + ".seq",
-            sid_list_path.replace(".TXT", ".TXT.SEQ"),
-            sid_list_path.replace(".txt", ".txt.seq"),
-            # Also try lowercase
-            sid_list_path.lower(),
-            sid_list_path.lower() + ".seq",
-        ]
-        # Remove duplicates while preserving order
-        variants = list(dict.fromkeys(variants))
-        
-        for variant in variants:
-            print(f"  Trying: {variant}")
-            content = read_file_from_ultimate(variant, verbose=False)
+        for fname in ["SIDFILES.TXT", "SIDFILES.TXT.SEQ", "sidfiles.txt.seq"]:
+            content = read_file_via_memory(base_path, fname, verbose=True)
             if content:
-                print(f"  ✓ Found: {variant}")
+                print(f"  ✓ Read SIDFILES.TXT successfully")
                 break
-        
-        # Option 3: If API fails, try the memory hack
-        if not content:
-            print(f"  API read failed, trying memory hack...")
-            # Try different filename variants
-            for fname in ["SIDFILES.TXT", "SIDFILES.TXT.SEQ", "sidfiles.txt.seq"]:
-                content = read_file_via_memory(base_path, fname, verbose=True)
-                if content:
-                    print(f"  ✓ Read via memory hack")
-                    break
         
         if not content:
             print(f"\n✗ Failed to read SID file list from Ultimate")
@@ -450,81 +487,127 @@ def play_all_sids(sid_list_path, base_path, duration=None, song_number=1,
         print("🔁 Loop mode enabled")
     
     print()
+    print("Controls: [SPACE] = next song, [Q] = quit and reset C64")
+    print("-" * 60)
+    
+    quit_requested = False
     
     try:
-        while True:  # For loop mode
-            playlist = sid_files.copy()
-            if shuffle:
-                random.shuffle(playlist)
-            
-            for i, sid_file in enumerate(playlist, 1):
-                filename = sid_file.split('/')[-1]
+        with RawTerminal():
+            while True:  # For loop mode
+                playlist = sid_files.copy()
+                if shuffle:
+                    random.shuffle(playlist)
                 
-                # Get SID info for duration
-                if duration is None:
-                    sid_info = get_sid_info(sid_file)
-                    song_duration = sid_info['duration']
-                else:
-                    song_duration = duration
-                
-                print(f"\n[{i}/{len(playlist)}] {filename}")
-                print(f"    Path: {sid_file}")
-                print(f"    Duration: {format_duration(song_duration)}")
-                
-                if play_sid_file(sid_file, song_number):
-                    print(f"    ▶ Playing...")
+                for i, sid_file in enumerate(playlist, 1):
+                    if quit_requested:
+                        break
                     
-                    # Wait for song duration with countdown
-                    remaining = song_duration
-                    while remaining > 0:
-                        mins = remaining // 60
-                        secs = remaining % 60
-                        print(f"\r    ⏱ Remaining: {mins}:{secs:02d}  ", end='', flush=True)
-                        time.sleep(1)
-                        remaining -= 1
+                    filename = sid_file.split('/')[-1]
                     
-                    print(f"\r    ✓ Finished                ")
-                else:
-                    print("    ✗ Skipping...")
-                    time.sleep(2)
-            
-            if not loop:
-                break
-            
-            print("\n" + "=" * 60)
-            print("🔁 Restarting playlist...")
-            print("=" * 60)
+                    # Get SID info for duration
+                    if duration is None:
+                        sid_info = get_sid_info(sid_file)
+                        song_duration = sid_info['duration']
+                    else:
+                        song_duration = duration
+                    
+                    # Use \r\n for raw terminal mode
+                    sys.stdout.write(f"\r\n[{i}/{len(playlist)}] {filename}\r\n")
+                    sys.stdout.write(f"    Path: {sid_file}\r\n")
+                    sys.stdout.write(f"    Duration: {format_duration(song_duration)}\r\n")
+                    sys.stdout.flush()
+                    
+                    if play_sid_file(sid_file, song_number):
+                        sys.stdout.write(f"    ▶ Playing...\r\n")
+                        sys.stdout.flush()
+                        
+                        # Wait for song duration with countdown, check for key presses
+                        remaining = song_duration
+                        skip_song = False
+                        
+                        while remaining > 0 and not skip_song and not quit_requested:
+                            mins = remaining // 60
+                            secs = remaining % 60
+                            sys.stdout.write(f"\r    ⏱ Remaining: {mins}:{secs:02d}  [SPACE=skip, Q=quit]  ")
+                            sys.stdout.flush()
+                            
+                            # Check for key press
+                            key = get_key_press()
+                            if key:
+                                if key == ' ':
+                                    skip_song = True
+                                    sys.stdout.write(f"\r    ⏭ Skipping...                              \r\n")
+                                    sys.stdout.flush()
+                                elif key.lower() == 'q':
+                                    quit_requested = True
+                                    sys.stdout.write(f"\r    ⏹ Quit requested...                        \r\n")
+                                    sys.stdout.flush()
+                            
+                            time.sleep(0.1)  # Check more frequently for key presses
+                            remaining -= 0.1
+                        
+                        if not skip_song and not quit_requested:
+                            sys.stdout.write(f"\r    ✓ Finished                                  \r\n")
+                            sys.stdout.flush()
+                    else:
+                        sys.stdout.write("    ✗ Skipping...\r\n")
+                        sys.stdout.flush()
+                        time.sleep(2)
+                
+                if quit_requested or not loop:
+                    break
+                
+                sys.stdout.write("\r\n" + "=" * 60 + "\r\n")
+                sys.stdout.write("🔁 Restarting playlist...\r\n")
+                sys.stdout.write("=" * 60 + "\r\n")
+                sys.stdout.flush()
     
     except KeyboardInterrupt:
-        print("\n\n⏹ Playback interrupted by user")
-        stop_sid()
+        sys.stdout.write("\r\n\r\n⏹ Playback interrupted by user\r\n")
+        sys.stdout.flush()
+    
+    # Clean up
+    if quit_requested:
+        print("\nResetting C64...")
+        reset_machine()
+    stop_sid()
     
     print("\n" + "=" * 60)
     print("Finished!")
 
 
 def main():
-    global ULTIMATE_BASE_URL, API_BASE
+    global ULTIMATE_BASE_URL, API_BASE, ULTIMATE_HOST, ULTIMATE_PORT, DEFAULT_SONG_DURATION
+    
+    # Load config file
+    config = load_config()
     
     parser = argparse.ArgumentParser(
         description='Play SID files from SIDFILES.TXT on Ultimate64',
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
+        epilog=f"""
 Examples:
-  %(prog)s /USB0/MUSIC/HVSC/BESTOF
-  %(prog)s /USB0/MUSIC/HVSC/BESTOF --random
-  %(prog)s /USB0/MUSIC/HVSC/BESTOF --duration 120 --random --loop
-  %(prog)s /USB0/MUSIC/HVSC/BESTOF --list-file /USB0/MUSIC/HVSC/BESTOF/SIDFILES.TXT
+  %(prog)s                                    # Use config defaults
+  %(prog)s /USB0/MUSIC/HVSC/BESTOF            # Specify path
+  %(prog)s --random --loop                    # Shuffle and loop
+  %(prog)s --duration 120                     # 2 minutes per song
+
+Config file: {CONFIG_FILE}
+  Edit this file to set default host, port, base_path, duration, etc.
+
+Device mapping: USB0 = device 11, USB1 = device 10
 
 Note: Run sid_finder.prg on the C64 first to generate SIDFILES.TXT
         """
     )
     
-    parser.add_argument('path', 
-                        help='Base path to SID files directory on Ultimate (e.g., /USB0/MUSIC/HVSC/BESTOF)')
+    parser.add_argument('path', nargs='?',
+                        help=f'Base path to SID files (default from config: {config["base_path"]})',
+                        default=None)
     
     parser.add_argument('--list-file', '-l',
-                        help='Path to SIDFILES.TXT on Ultimate OR local file (default: <path>/SIDFILES.TXT)',
+                        help='Path to SIDFILES.TXT on Ultimate (default: <path>/SIDFILES.TXT)',
                         default=None)
     
     parser.add_argument('--local-list', '-L',
@@ -533,7 +616,7 @@ Note: Run sid_finder.prg on the C64 first to generate SIDFILES.TXT
     
     parser.add_argument('--duration', '-d',
                         type=int,
-                        help='Duration per song in seconds (default: auto-detect or 180)',
+                        help=f'Duration per song in seconds (default from config: {config["duration"]})',
                         default=None)
     
     parser.add_argument('--song', '-s',
@@ -543,45 +626,53 @@ Note: Run sid_finder.prg on the C64 first to generate SIDFILES.TXT
     
     parser.add_argument('--random', '-r',
                         action='store_true',
-                        help='Shuffle/randomize play order')
+                        default=None,
+                        help=f'Shuffle/randomize play order (default from config: {config["random"]})')
     
     parser.add_argument('--loop',
                         action='store_true',
-                        help='Loop playlist forever')
+                        default=None,
+                        help=f'Loop playlist forever (default from config: {config["loop"]})')
     
     parser.add_argument('--host',
-                        help=f'Ultimate device hostname/IP (default: {ULTIMATE_HOST})',
-                        default=ULTIMATE_HOST)
+                        help=f'Ultimate device hostname/IP (default from config: {config["host"]})',
+                        default=None)
     
     parser.add_argument('--port',
                         type=int,
-                        help=f'Ultimate device port (default: {ULTIMATE_PORT})',
-                        default=ULTIMATE_PORT)
+                        help=f'Ultimate device port (default from config: {config["port"]})',
+                        default=None)
     
     args = parser.parse_args()
     
-    # Update config if custom host/port
-    host = args.host
-    port = args.port
+    # Apply config values, CLI args override config
+    host = args.host if args.host else config["host"]
+    port = args.port if args.port else config["port"]
+    base_path = args.path.rstrip('/') if args.path else config["base_path"].rstrip('/')
+    duration = args.duration if args.duration is not None else config["duration"]
+    shuffle = args.random if args.random is not None else config["random"]
+    loop = args.loop if args.loop is not None else config["loop"]
+    
+    # Update globals
+    ULTIMATE_HOST = host
+    ULTIMATE_PORT = port
     ULTIMATE_BASE_URL = f"http://{host}:{port}"
     API_BASE = f"{ULTIMATE_BASE_URL}/v1"
+    DEFAULT_SONG_DURATION = duration
     
     # Determine list file path
-    base_path = args.path.rstrip('/')
     if args.list_file:
         list_file = args.list_file
     else:
-        # Try both with and without .SEQ extension (C64 sequential files)
         list_file = f"{base_path}/SIDFILES.TXT"
-        # Will try .SEQ variant in play_all_sids if first fails
     
     play_all_sids(
         sid_list_path=list_file,
         base_path=base_path,
-        duration=args.duration,
+        duration=duration,
         song_number=args.song,
-        shuffle=args.random,
-        loop=args.loop,
+        shuffle=shuffle,
+        loop=loop,
         local_list=args.local_list
     )
 
