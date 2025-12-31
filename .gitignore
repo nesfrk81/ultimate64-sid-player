@@ -1,0 +1,48 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.env
+venv/
+
+# Debug and test files
+debug*.txt.seq
+dirdump.txt.seq
+*.seq
+
+# Test programs (not needed for release)
+test_*.bas
+test_*.prg
+test.prg
+test2.prg
+hello_world*.bas
+hello_world*.prg
+
+# Old/deprecated versions
+create_sid_list*.bas
+create_sid_list*.prg
+create_sid_list.sh
+create_prg_correct.py
+basic_to_prg.py
+convert_to_prg.sh
+
+# Old Python scripts
+play_all_sids_simple.py
+play_all_sids_mcp.py
+discover_sid_files.py
+
+# Misc
+*.txt
+!requirements.txt
+upload_to_c64.sh
+dir_dump.bas
+dir_dump.prg
+load_sidlist.bas
+load_sidlist.prg
+play_sids.bas
+todo_list.md
+README_C64_PROGRAM.md
+
+# IDE
+.vscode/
+.idea/
