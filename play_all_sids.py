@@ -527,8 +527,8 @@ def play_all_sids(sid_list_path, base_path, duration=None, song_number=1,
                         skip_song = False
                         
                         while remaining > 0 and not skip_song and not quit_requested:
-                            mins = remaining // 60
-                            secs = remaining % 60
+                            mins = int(remaining) // 60
+                            secs = int(remaining) % 60
                             sys.stdout.write(f"\r    ⏱ Remaining: {mins}:{secs:02d}  [SPACE=skip, Q=quit]  ")
                             sys.stdout.flush()
                             

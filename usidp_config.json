@@ -3,6 +3,6 @@
     "port": 80,
     "base_path": "/USB0/MUSIC/HVSC/BESTOF",
     "duration": 180,
-    "random": false,
-    "loop": false
+    "random": true,
+    "loop": true
 }
