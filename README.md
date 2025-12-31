@@ -24,11 +24,6 @@ pip install -r requirements.txt
 
 Run `sid_finder.prg` on your C64:
 
-```bash
-# Build the program
-python3 build_and_deploy.py sid_finder.bas sid_finder.prg
-```
-
 The program will prompt for a path or use the current directory.
 
 ### 3. Play SID Files
