@@ -186,12 +186,12 @@ c64/
 ├── play_all_sids.py      # Main Python player script
 ├── sid_finder.bas        # C64 BASIC source - scans for SID files
 ├── sid_finder.prg        # Compiled PRG for C64
-├── memload.bas           # Memory loader source (used automatically)
-├── memload.prg           # Compiled memory loader
-├── usidp_config.json     # Configuration file
-├── build_and_deploy.py   # BASIC tokenizer
+├── usidp_config.json     # Configuration file (created on first run)
+├── build_and_deploy.py   # BASIC tokenizer/builder
 └── basic_tokenizer.py    # Tokenizer library
 ```
+
+Note: The memory loader is generated dynamically by `play_all_sids.py` - no separate file needed.
 
 ## Troubleshooting
 

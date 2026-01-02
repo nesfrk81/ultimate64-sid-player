@@ -31,11 +31,11 @@ def tokenize_basic_line(line):
     """Convert a BASIC line to tokenized format"""
     # Remove line number (we'll add it separately)
     line = line.strip()
-    if not line or line.startswith('REM'):
+    if not line:
         return None
     
     # Extract line number
-    match = re.match(r'^(\d+)\s+(.*)$', line)
+    match = re.match(r'^(\d+)\s*(.*)$', line)
     if not match:
         return None
     
@@ -46,27 +46,62 @@ def tokenize_basic_line(line):
     
     # Tokenize the content
     i = 0
+    in_string = False
+    in_rem = False
+    
     while i < len(content):
+        char = content[i]
+        
+        # Track string literals - don't tokenize inside them
+        if char == '"':
+            in_string = not in_string
+            tokens.append(ord(char))
+            i += 1
+            continue
+        
+        # If we're inside a string or after REM, just add raw character
+        if in_string or in_rem:
+            if ord(char) < 128:
+                tokens.append(ord(char))
+            else:
+                tokens.append(ord('?'))
+            i += 1
+            continue
+        
         # Try to match BASIC keywords (longest first)
         matched = False
         for keyword in sorted(BASIC_TOKENS.keys(), key=len, reverse=True):
             if content[i:].upper().startswith(keyword):
-                # Check if it's a word boundary
-                if i + len(keyword) >= len(content) or \
-                   not content[i + len(keyword)].isalnum():
+                # For single-char operators, always tokenize
+                if len(keyword) == 1 and keyword in '+-*/^>=<':
                     tokens.append(BASIC_TOKENS[keyword])
                     i += len(keyword)
                     matched = True
                     break
+                # PRINT# and INPUT# are followed by file number directly
+                elif keyword in ('PRINT#', 'INPUT#'):
+                    tokens.append(BASIC_TOKENS[keyword])
+                    i += len(keyword)
+                    matched = True
+                    break
+                # For keywords, check word boundary
+                elif len(keyword) > 1:
+                    end_pos = i + len(keyword)
+                    if end_pos >= len(content) or not content[end_pos].isalnum():
+                        tokens.append(BASIC_TOKENS[keyword])
+                        i += len(keyword)
+                        matched = True
+                        # Check if this was REM - rest of line is comment
+                        if keyword == 'REM':
+                            in_rem = True
+                        break
         
         if not matched:
             # Regular character
-            char = content[i]
-            # Convert to PETSCII
             if ord(char) < 128:
                 tokens.append(ord(char))
             else:
-                tokens.append(ord('?'))  # Replace non-ASCII with ?
+                tokens.append(ord('?'))
             i += 1
     
     return (line_num, tokens)

@@ -146,6 +146,7 @@ def read_file_via_memory(base_path, filename="SIDFILES.TXT", verbose=True):
     device = get_device_for_path(base_path)
     
     # Build the BASIC program dynamically for the target path
+    # Note: Empty chars (GET# returns "") become CR (13) to avoid null terminator issues
     bas_content = f'''10 REM Load file to memory via CD
 20 PRINT CHR$(147);"LOADING FILE TO MEMORY"
 30 PRINT
@@ -165,7 +166,7 @@ def read_file_via_memory(base_path, filename="SIDFILES.TXT", verbose=True):
 170 GET#1,C$
 180 IF ST=64 THEN GOTO 210
 190 IF LEN(C$)>0 THEN POKE A,ASC(C$):A=A+1:N=N+1:GOTO 170
-200 POKE A,0:A=A+1:N=N+1:GOTO 170
+200 POKE A,13:A=A+1:N=N+1:GOTO 170
 210 POKE A,0
 220 CLOSE 1
 230 PRINT "LOADED ";N;" BYTES"
@@ -228,13 +229,36 @@ def read_file_via_memory(base_path, filename="SIDFILES.TXT", verbose=True):
         # Wait for the program to complete (file I/O takes time)
         time.sleep(8)
         
-        # Read memory at $C000 (where the file content is stored)
-        # The API returns raw bytes, not JSON
-        content_bytes = b''
+        # First, read the file length from $BFFE-$BFFF (stored by the loader)
+        len_url = f"{API_BASE}/machine:readmem?address=BFFE&length=2"
+        try:
+            response = requests.get(len_url, timeout=10)
+            if response.status_code == 200:
+                try:
+                    data = response.json()
+                    if 'data' in data:
+                        len_bytes = bytes.fromhex(data['data'])
+                    else:
+                        len_bytes = response.content
+                except:
+                    len_bytes = response.content
+                
+                file_length = len_bytes[0] + (len_bytes[1] * 256)
+                if verbose:
+                    print(f"    File length from loader: {file_length} bytes")
+            else:
+                file_length = 2048  # Fallback
+        except:
+            file_length = 2048  # Fallback
         
-        for offset in range(0, 2048, 256):
+        # Read memory at $C000 (where the file content is stored)
+        content_bytes = b''
+        bytes_to_read = min(file_length, 4096)  # Cap at 4KB
+        
+        for offset in range(0, bytes_to_read, 256):
             addr = 0xC000 + offset
-            mem_url = f"{API_BASE}/machine:readmem?address={addr:04x}&length=256"
+            read_len = min(256, bytes_to_read - offset)
+            mem_url = f"{API_BASE}/machine:readmem?address={addr:04x}&length={read_len}"
             response = requests.get(mem_url, timeout=10)
             
             if response.status_code != 200:
@@ -252,11 +276,6 @@ def read_file_via_memory(base_path, filename="SIDFILES.TXT", verbose=True):
             except:
                 chunk = response.content
             
-            # Find null terminator
-            null_pos = chunk.find(b'\x00')
-            if null_pos >= 0:
-                content_bytes += chunk[:null_pos]
-                break
             content_bytes += chunk
         
         if not content_bytes:
